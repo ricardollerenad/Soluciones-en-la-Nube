@@ -1,0 +1,201 @@
+# Software Previo: 
+
+- openssh-server: Para permitir conexiones SSH entrantes.
+- curl, ca-certificates, gnupg: Para descargar repositorios y binarios.
+- Docker Engine: Instalado desde el repositorio oficial de Docker.
+- kind: Para crear el clúster local de Kubernetes usando contenedores Docker.
+- kubectl: El cliente de línea de comandos para controlar Kubernetes.
+- k9s (recomendado): Interfaz visual de terminal.
+
+[VM Debian 12] ──(SSH)──> [Terminal Local] ──(kind)──> [Clúster K8s en Docker]
+
+# Preparacion del Setup
+## Paso N°1: Configurar VPS
+
+- Cambiarle el cdroom
+- Descargar el openssh 
+
+```bash
+# Actualizar repositorios del sistema
+sudo apt update && sudo apt upgrade -y
+
+# Instalación de OpenSSH, curl, ca-certificates y gnupg
+sudo apt install -y openssh-server curl ca-certificates gnupg
+
+# Asegurar que el servicio SSH esté activo y se ejecute al arrancar
+sudo systemctl enable --now ssh
+
+# Instalamos el Curl
+sudo apt update
+sudo apt install -y curl ca-certificates gnupg
+```  
+## Paso N°2: Instalar Docker
+```bash
+# 1. Crear directorio para las claves de repositorios
+sudo install -m 0755 -d /etc/apt/keyrings
+
+# 2. Descargar la clave GPG oficial de Docker
+curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+# 3. Agregar el repositorio oficial a las fuentes de APT
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 4. Actualizar índices e instalar Docker Engine y sus componentes
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# 5. Permitir usar Docker sin 'sudo'
+sudo usermod -aG docker $USER
+newgrp docker
+```  
+## Paso N°3: Instalación de kind (Kubernetes in Docker)
+Descargamos el binario oficial y lo movemos a la ruta ejecutable:
+
+```bash
+# Descargar el binario de kind
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+
+# Dar permisos de ejecución y mover a /usr/local/bin
+chmod +x ./kind
+sudo mv ./kind /usr/local/bin/kind
+```  
+## Paso N°4: Instalación de kubectl
+Descargamos la última versión estable del CLI oficial de Kubernetes:
+
+```bash
+# Descargar el binario de kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+
+# Dar permisos de ejecución y mover a /usr/local/bin
+chmod +x kubectl
+sudo mv kubectl /usr/local/bin/
+```  
+## Paso N°5: Instalación de k9s
+Descargamos la interfaz visual para la terminal:
+
+```bash
+# Descargar el comprimido de k9s
+curl -Lo k9s.tar.gz https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz
+
+# Extraer, dar permisos y mover a /usr/local/bin
+tar -xzf k9s.tar.gz k9s
+chmod +x k9s
+sudo mv k9s /usr/local/bin/
+
+# Limpiar archivo descargado
+rm k9s.tar.gz
+
+```  
+
+Corremos en el terminal: k9s
+## 🧪 Verificación final de instalación
+Para confirmar que todas las herramientas quedaron bien configuradas antes de pasar a la fase de pruebas, ejecuta esto:
+
+```bash
+docker run hello-world
+```  
+
+```bash
+docker --version && kind version && kubectl version --client && k9s version
+```  
+
+# Crear el clúster
+Ejecuta este bloque de comandos completo en tu terminal para hacer la preparación de prueba:
+
+## Paso N°1: Despliegue de nuestro cluster
+
+```bash
+# 1. Crear el clúster con kind (tarda ~1-2 min)
+kind create cluster --name demo-cluster
+
+# 2. Verificar que el clúster reconozca la configuración local (Contexto)
+kubectl cluster-info --context kind-demo-cluster
+
+# 3. Validar que el nodo esté en estado 'Ready'
+kubectl get nodes
+
+# 4. Pre-cachear las imágenes en Docker Local Y cargarlas dentro de 'kind'
+docker pull nginx:latest
+kind load docker-image nginx:latest --name demo-cluster
+
+# 5. Crear la carpeta del proyecto
+mkdir -p ~/k8s-demo && cd ~/k8s-demo
+```  
+
+Ya podemos crear nuestros YAML declarativos
+
+## Paso N°2: Crear los archivos en la terminal
+
+```bash
+# Asegúrate de estar en tu carpeta de trabajo
+cd ~/k8s-demo
+```  
+
+# Creamos el archivo: deployment.yaml y service
+
+```bash
+nano deployment.yaml
+```  
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-demo
+  labels:
+    app: nginx-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx-demo
+  template:
+    metadata:
+      labels:
+        app: nginx-demo
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+```
+
+```bash
+nano service.yaml
+```  
+y el `service.yaml`
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-demo
+spec:
+  selector:
+    app: nginx-demo
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP
+```
+
+## Paso N°2: Implementar los YAMLs
+
+```bash
+#Rpta esperado - deployment.apps/nginx-demo created
+kubectl apply -f deployment.yaml
+
+#Consultamos los pods creados - Rpta esperada: deployment.apps/nginx-demo created
+kubectl get pods
+
+# Aplicar el Service (Exponer la aplicación dentro del clúster) - service/nginx-demo created
+kubectl apply -f service.yaml
+
+kubectl port-forward service/nginx-demo 8080:80
+```  
